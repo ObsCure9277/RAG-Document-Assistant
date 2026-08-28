@@ -51,6 +51,7 @@ async def index_version(
         for chunk, vector in zip(chunks, vectors, strict=True):
             session.add(DocumentChunk(version_id=version_id, chunk_index=chunk.chunk_index, content=chunk.content, page_number=chunk.page_number, heading=chunk.heading, metadata_={"source": chunk.source}, embedding=vector))
         version.status = "indexed"
+        document.active_version_id = version.id
         version.is_searchable = True
         version.indexed_at = datetime.now(timezone.utc)
         job.status = "completed"
@@ -69,5 +70,7 @@ async def index_version(
         job.error_message = f"Indexing failed: {error}"
         version.status = "failed" if job.attempts >= max_attempts else "uploaded"
         await session.commit()
+
+
 
 

@@ -3,6 +3,9 @@ from pathlib import Path
 import re
 from typing import Protocol
 
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.schema import TextNode
+
 
 @dataclass(frozen=True)
 class ExtractedSection:
@@ -60,19 +63,13 @@ class DocumentExtractor:
 
 
 def chunk_sections(sections: list[ExtractedSection], target_tokens: int = 600, overlap_tokens: int = 75) -> list[Chunk]:
-    """Create deterministic sentence-aware chunks using words as a token approximation."""
+    """Create chunks with LlamaIndex while preserving source metadata."""
     if target_tokens <= overlap_tokens or target_tokens < 1:
         raise ValueError("target_tokens must be greater than overlap_tokens")
+    splitter = SentenceSplitter(chunk_size=target_tokens, chunk_overlap=overlap_tokens)
     chunks: list[Chunk] = []
     for section in sections:
-        sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", section.text) if sentence.strip()]
-        words: list[str] = []
-        for sentence in sentences:
-            sentence_words = sentence.split()
-            if words and len(words) + len(sentence_words) > target_tokens:
-                chunks.append(Chunk(" ".join(words), len(chunks), section.source, section.page_number, section.heading))
-                words = words[-overlap_tokens:]
-            words.extend(sentence_words)
-        if words:
-            chunks.append(Chunk(" ".join(words), len(chunks), section.source, section.page_number, section.heading))
+        for content in splitter.split_text(section.text):
+            node = TextNode(text=content, metadata={"source": section.source, "page_number": section.page_number, "heading": section.heading})
+            chunks.append(Chunk(node.get_content(), len(chunks), section.source, section.page_number, section.heading))
     return chunks

@@ -4,7 +4,7 @@ import uuid
 
 class OriginalStorage:
     def __init__(self, root: Path):
-        self.root = root
+        self.root = Path(root)
 
     def path_for(self, document_id: uuid.UUID, filename: str) -> Path:
         return self.root / str(document_id) / filename

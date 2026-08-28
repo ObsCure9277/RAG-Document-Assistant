@@ -2,9 +2,9 @@ from app.reliability import retry_async
 
 
 class OpenAIEmbedder:
-    def __init__(self, api_key: str, model: str, batch_size: int = 32, timeout_seconds: float = 60.0, retry_attempts: int = 3, retry_base_delay: float = 0.5):
+    def __init__(self, api_key: str, model: str, batch_size: int = 32, timeout_seconds: float = 60.0, retry_attempts: int = 3, retry_base_delay: float = 0.5, base_url: str | None = None):
         from openai import AsyncOpenAI
-        self.client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
         self.model = model
         self.batch_size = batch_size
         self.retry_attempts = retry_attempts

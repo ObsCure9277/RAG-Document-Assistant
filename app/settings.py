@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
     upload_root: str = "/data/uploads"
     openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     embedding_model: str = "text-embedding-3-small"
     embedding_batch_size: int = Field(default=32, ge=1)
     max_indexing_attempts: int = Field(default=3, ge=1)

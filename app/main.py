@@ -32,7 +32,6 @@ if get_settings().inngest_event_key:
 
 
 class CitationResponse(BaseModel):
-    chunk_id: uuid.UUID
     document_id: uuid.UUID
     document_name: str
     page_number: int | None
@@ -57,7 +56,7 @@ class DocumentSummary(BaseModel):
 
 
 def _citation_payload(citation: Citation) -> dict:
-    return {"chunk_id": str(citation.chunk_id), "document_id": str(citation.document_id), "document_name": citation.document_name, "page_number": citation.page_number, "heading": citation.heading, "excerpt": citation.excerpt, "vector_score": citation.vector_score, "text_score": citation.text_score, "score": citation.score}
+    return {"document_id": str(citation.document_id), "document_name": citation.document_name, "page_number": citation.page_number, "heading": citation.heading, "excerpt": citation.excerpt, "vector_score": citation.vector_score, "text_score": citation.text_score, "score": citation.score}
 
 def _storage() -> OriginalStorage:
     return OriginalStorage(Path(get_settings().upload_root))
@@ -65,7 +64,8 @@ def _storage() -> OriginalStorage:
 
 def _summary(document: Document) -> DocumentSummary:
     version = latest_version(document)
-    job = max(version.ingestion_jobs, key=lambda item: item.created_at, default=None) if version else None
+    jobs = version.__dict__.get("ingestion_jobs", []) if version else []
+    job = max(jobs, key=lambda item: item.created_at, default=None)
     return DocumentSummary(
         id=document.id,
         title=document.title,
@@ -96,7 +96,7 @@ async def search_documents(query: str, document_ids: list[uuid.UUID] | None = No
     settings = get_settings()
     if not query.strip():
         raise HTTPException(status_code=400, detail="Search query must not be empty")
-    embedder = OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size)
+    embedder = OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size, base_url=settings.openai_base_url)
     query_embedding = (await embedder.embed([query]))[0]
     citations = await retrieve(session, query, query_embedding, vector_limit=settings.retrieval_vector_candidates, text_limit=settings.retrieval_text_candidates, context_limit=settings.retrieval_context_limit, similarity_threshold=settings.retrieval_similarity_threshold, document_ids=document_ids)
     return [CitationResponse.model_validate(citation.__dict__) for citation in citations]
@@ -243,7 +243,7 @@ async def create_message(conversation_id: uuid.UUID, request: ChatRequest, sessi
     user_message = Message(conversation_id=conversation_id, role="user", content=request.content, status="complete")
     session.add(user_message)
     await session.commit()
-    model = OpenAIChatModel(settings.openai_api_key, settings.answer_model, settings.answer_max_tokens, settings.openai_timeout_seconds, settings.openai_retry_attempts, settings.openai_retry_base_delay)
+    model = OpenAIChatModel(settings.openai_api_key, settings.answer_model, settings.answer_max_tokens, settings.openai_timeout_seconds, settings.openai_retry_attempts, settings.openai_retry_base_delay, settings.openai_base_url)
 
     async def stream_response():
         answer = ""
@@ -251,10 +251,12 @@ async def create_message(conversation_id: uuid.UUID, request: ChatRequest, sessi
         timer = Timer()
         try:
             query = await model.rewrite(request.content, history)
-            query_embedding = (await OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size, settings.openai_timeout_seconds, settings.openai_retry_attempts, settings.openai_retry_base_delay).embed([query]))[0]
+            query_embedding = (await OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size, settings.openai_timeout_seconds, settings.openai_retry_attempts, settings.openai_retry_base_delay, settings.openai_base_url).embed([query]))[0]
             citations = await retrieve(session, query, query_embedding, vector_limit=settings.retrieval_vector_candidates, text_limit=settings.retrieval_text_candidates, context_limit=settings.retrieval_context_limit, similarity_threshold=settings.retrieval_similarity_threshold, document_ids=request.document_ids)
             yield sse("citations", [_citation_payload(citation) for citation in citations])
             prompt = build_grounded_prompt(query, history, citations)
+            answer_timer = Timer()
+            log_event("llm_answer_started", conversation_id=str(conversation_id))
             async for token in model.stream(prompt.messages):
                 answer += token
                 yield sse("token", {"text": token})

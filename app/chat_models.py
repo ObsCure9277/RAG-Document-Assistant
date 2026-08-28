@@ -5,8 +5,8 @@ from app.reliability import retry_async
 
 
 class OpenAIChatModel:
-    def __init__(self, api_key: str, model: str, max_tokens: int = 800, timeout_seconds: float = 60.0, retry_attempts: int = 3, retry_base_delay: float = 0.5):
-        self.client = AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
+    def __init__(self, api_key: str, model: str, max_tokens: int = 800, timeout_seconds: float = 60.0, retry_attempts: int = 3, retry_base_delay: float = 0.5, base_url: str | None = None):
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
         self.model = model
         self.max_tokens = max_tokens
         self.retry_attempts = retry_attempts

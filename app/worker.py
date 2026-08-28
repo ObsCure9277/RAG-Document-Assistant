@@ -18,27 +18,33 @@ async def index_version(version_id: uuid.UUID, session: AsyncSession, embedder: 
     if job is None:
         job = IngestionJob(version_id=version_id)
         session.add(job)
-    if job.attempts >= max_attempts:
+    if (job.attempts or 0) >= max_attempts:
         version.status = "failed"
         job.status = "failed"
         job.error_message = "Maximum indexing attempts reached; retry requires a new job."
         await session.commit()
         log_event("index_failed", version_id=str(version_id), duration_ms=timer.elapsed_ms, attempts=job.attempts)
         return
-    job.attempts += 1
+    job.attempts = (job.attempts or 0) + 1
     job.status = "processing"
     job.started_at = datetime.now(timezone.utc)
     version.status = "processing"
     await session.flush()
     try:
         document = (await session.execute(select(Document).where(Document.id == version.document_id))).scalar_one()
+        load_timer = Timer()
+        log_event("load_and_chunk_started", version_id=str(version_id))
         sections = (extractor or DocumentExtractor()).extract(storage.path_for(document.id, document.original_filename), document.mime_type)
         chunks = chunk_sections(sections)
+        log_event("load_and_chunk_completed", version_id=str(version_id), sections=len(sections), chunks=len(chunks), duration_ms=load_timer.elapsed_ms, chunks_per_second=round(len(chunks) / max(load_timer.elapsed_ms / 1000, 0.001), 2))
+        embed_timer = Timer()
+        log_event("embed_and_upsert_started", version_id=str(version_id), chunks=len(chunks))
         vectors = await embedder.embed([chunk.content for chunk in chunks])
         if len(vectors) != len(chunks):
             raise ValueError("Embedding provider returned an unexpected number of vectors")
         await session.execute(delete(DocumentChunk).where(DocumentChunk.version_id == version_id))
         version.extracted_text = "\n\n".join(section.text for section in sections)
+        log_event("embeddings_completed", version_id=str(version_id), embeddings=len(vectors))
         for chunk, vector in zip(chunks, vectors, strict=True):
             session.add(DocumentChunk(version_id=version_id, chunk_index=chunk.chunk_index, content=chunk.content, page_number=chunk.page_number, heading=chunk.heading, metadata_={"source": chunk.source}, embedding=vector))
         version.status = "indexed"
@@ -49,6 +55,7 @@ async def index_version(version_id: uuid.UUID, session: AsyncSession, embedder: 
         job.finished_at = datetime.now(timezone.utc)
         job.error_message = None
         await session.commit()
+        log_event("embed_and_upsert_completed", version_id=str(version_id), chunks=len(chunks), duration_ms=embed_timer.elapsed_ms, chunks_per_second=round(len(chunks) / max(embed_timer.elapsed_ms / 1000, 0.001), 2))
         log_event("index_completed", version_id=str(version_id), chunks=len(chunks), duration_ms=timer.elapsed_ms, attempts=job.attempts)
     except Exception as error:
         await session.rollback()
@@ -57,7 +64,7 @@ async def index_version(version_id: uuid.UUID, session: AsyncSession, embedder: 
         if job is None:
             job = IngestionJob(version_id=version_id)
             session.add(job)
-        job.attempts += 1
+        job.attempts = (job.attempts or 0) + 1
         job.status = "failed" if job.attempts >= max_attempts else "queued"
         job.error_message = f"Indexing failed: {error}"
         version.status = "failed" if job.attempts >= max_attempts else "uploaded"

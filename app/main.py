@@ -12,6 +12,8 @@ from app.db import get_session
 from app.documents import Upload, validate_upload
 from app.events import IngestionRequested, InngestEventPublisher, event_publisher
 from app.inngest_worker import client as inngest_client, index_document
+from app.embeddings import OpenAIEmbedder
+from app.retrieval import retrieve
 from app.lifecycle import enqueue_reindex, enqueue_retry, latest_version, load_document
 from app.models import Document, DocumentVersion
 from app.settings import get_settings
@@ -23,6 +25,17 @@ if get_settings().inngest_signing_key:
 if get_settings().inngest_event_key:
     event_publisher = InngestEventPublisher(inngest_client)
 
+
+class CitationResponse(BaseModel):
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    document_name: str
+    page_number: int | None
+    heading: str | None
+    excerpt: str
+    vector_score: float | None
+    text_score: float | None
+    score: float
 
 class DocumentSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -69,6 +82,16 @@ async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
 async def _publish(version_id: uuid.UUID) -> None:
     await event_publisher.publish(IngestionRequested(version_id))
 
+
+@app.get("/api/search", response_model=list[CitationResponse])
+async def search_documents(query: str, document_ids: list[uuid.UUID] | None = None, session: AsyncSession = Depends(get_session)) -> list[CitationResponse]:
+    settings = get_settings()
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="Search query must not be empty")
+    embedder = OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size)
+    query_embedding = (await embedder.embed([query]))[0]
+    citations = await retrieve(session, query, query_embedding, vector_limit=settings.retrieval_vector_candidates, text_limit=settings.retrieval_text_candidates, context_limit=settings.retrieval_context_limit, similarity_threshold=settings.retrieval_similarity_threshold, document_ids=document_ids)
+    return [CitationResponse.model_validate(citation.__dict__) for citation in citations]
 
 @app.get("/health")
 async def health() -> dict[str, str]:
@@ -154,3 +177,6 @@ async def delete_document(document_id: uuid.UUID, session: AsyncSession = Depend
     await session.delete(document)
     await session.commit()
     _storage().delete(document_id, filename)
+
+
+

@@ -16,12 +16,17 @@ class Settings(BaseSettings):
     inngest_event_key: str = ""
     inngest_signing_key: str = ""
     inngest_event_api_url: str = "http://localhost:8288/e"
+    retrieval_vector_candidates: int = Field(default=20, ge=1)
+    retrieval_text_candidates: int = Field(default=20, ge=1)
+    retrieval_context_limit: int = Field(default=8, ge=1)
+    retrieval_similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
 
 
 

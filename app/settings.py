@@ -20,12 +20,16 @@ class Settings(BaseSettings):
     retrieval_text_candidates: int = Field(default=20, ge=1)
     retrieval_context_limit: int = Field(default=8, ge=1)
     retrieval_similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    answer_model: str = "gpt-4o-mini"
+    answer_max_tokens: int = Field(default=800, ge=1)
+    conversation_history_limit: int = Field(default=10, ge=1)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
 
 
 

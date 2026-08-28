@@ -3,6 +3,7 @@ from pathlib import Path
 
 import inngest.fast_api
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,9 +14,11 @@ from app.documents import Upload, validate_upload
 from app.events import IngestionRequested, InngestEventPublisher, event_publisher
 from app.inngest_worker import client as inngest_client, index_document
 from app.embeddings import OpenAIEmbedder
-from app.retrieval import retrieve
+from app.chat import build_grounded_prompt, sse
+from app.chat_models import OpenAIChatModel
+from app.retrieval import retrieve, Citation
 from app.lifecycle import enqueue_reindex, enqueue_retry, latest_version, load_document
-from app.models import Document, DocumentVersion
+from app.models import Conversation, Document, DocumentVersion, Message
 from app.settings import get_settings
 from app.storage import OriginalStorage
 
@@ -50,6 +53,9 @@ class DocumentSummary(BaseModel):
     active_version_id: uuid.UUID | None
     error_message: str | None = None
 
+
+def _citation_payload(citation: Citation) -> dict:
+    return {"chunk_id": str(citation.chunk_id), "document_id": str(citation.document_id), "document_name": citation.document_name, "page_number": citation.page_number, "heading": citation.heading, "excerpt": citation.excerpt, "vector_score": citation.vector_score, "text_score": citation.text_score, "score": citation.score}
 
 def _storage() -> OriginalStorage:
     return OriginalStorage(Path(get_settings().upload_root))
@@ -179,4 +185,85 @@ async def delete_document(document_id: uuid.UUID, session: AsyncSession = Depend
     _storage().delete(document_id, filename)
 
 
+
+
+
+class ConversationSummary(BaseModel):
+    id: uuid.UUID
+    title: str | None
+
+
+class MessageResponse(BaseModel):
+    id: uuid.UUID
+    role: str
+    content: str
+    status: str
+    citations: list[dict]
+
+
+class ChatRequest(BaseModel):
+    content: str
+    document_ids: list[uuid.UUID] | None = None
+
+
+@app.post("/api/conversations", response_model=ConversationSummary, status_code=status.HTTP_201_CREATED)
+async def create_conversation(session: AsyncSession = Depends(get_session)) -> ConversationSummary:
+    conversation = Conversation()
+    session.add(conversation)
+    await session.commit()
+    return ConversationSummary(id=conversation.id, title=conversation.title)
+
+
+@app.get("/api/conversations", response_model=list[ConversationSummary])
+async def list_conversations(session: AsyncSession = Depends(get_session)) -> list[ConversationSummary]:
+    result = await session.execute(select(Conversation).order_by(Conversation.updated_at.desc()))
+    return [ConversationSummary(id=item.id, title=item.title) for item in result.scalars().all()]
+
+
+@app.get("/api/conversations/{conversation_id}/messages", response_model=list[MessageResponse])
+async def list_messages(conversation_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> list[MessageResponse]:
+    result = await session.execute(select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at))
+    return [MessageResponse(id=item.id, role=item.role, content=item.content, status=item.status, citations=item.citations) for item in result.scalars().all()]
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+async def create_message(conversation_id: uuid.UUID, request: ChatRequest, session: AsyncSession = Depends(get_session)) -> StreamingResponse:
+    from fastapi.responses import StreamingResponse
+    settings = get_settings()
+    if not request.content.strip():
+        raise HTTPException(status_code=400, detail="Message content must not be empty")
+    conversation = await session.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    history_result = await session.execute(select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.desc()).limit(settings.conversation_history_limit))
+    history_rows = list(reversed(history_result.scalars().all()))
+    history = [{"role": item.role, "content": item.content} for item in history_rows]
+    user_message = Message(conversation_id=conversation_id, role="user", content=request.content, status="complete")
+    session.add(user_message)
+    await session.commit()
+    model = OpenAIChatModel(settings.openai_api_key, settings.answer_model, settings.answer_max_tokens)
+
+    async def stream_response():
+        answer = ""
+        citations: list[Citation] = []
+        try:
+            query = await model.rewrite(request.content, history)
+            query_embedding = (await OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size).embed([query]))[0]
+            citations = await retrieve(session, query, query_embedding, vector_limit=settings.retrieval_vector_candidates, text_limit=settings.retrieval_text_candidates, context_limit=settings.retrieval_context_limit, similarity_threshold=settings.retrieval_similarity_threshold, document_ids=request.document_ids)
+            yield sse("citations", [_citation_payload(citation) for citation in citations])
+            prompt = build_grounded_prompt(query, history, citations)
+            async for token in model.stream(prompt.messages):
+                answer += token
+                yield sse("token", {"text": token})
+            assistant = Message(conversation_id=conversation_id, role="assistant", content=answer, status="complete", citations=[_citation_payload(citation) for citation in citations])
+            session.add(assistant)
+            await session.commit()
+            yield sse("complete", {"message_id": assistant.id})
+        except Exception as error:
+            await session.rollback()
+            session.add(Message(conversation_id=conversation_id, role="assistant", content=answer, status="incomplete", citations=[_citation_payload(citation) for citation in citations]))
+            await session.commit()
+            yield sse("error", {"detail": str(error), "incomplete": True})
+
+    return StreamingResponse(stream_response(), media_type="text/event-stream")
 

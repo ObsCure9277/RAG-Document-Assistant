@@ -9,11 +9,18 @@ from sqlalchemy.orm import selectinload
 
 from app.db import get_session
 from app.documents import Upload, validate_upload
+from app.events import IngestionRequested, InngestEventPublisher, event_publisher
+from app.inngest_worker import client as inngest_client, index_document
+import inngest.fast_api
 from app.models import Document, DocumentVersion
 from app.settings import get_settings
 from app.storage import OriginalStorage
 
 app = FastAPI(title="Personal RAG document assistant")
+if get_settings().inngest_signing_key:
+    inngest.fast_api.serve(app, inngest_client, [index_document], serve_path="/api/inngest")
+if get_settings().inngest_event_key:
+    event_publisher = InngestEventPublisher(inngest_client)
 
 
 class DocumentSummary(BaseModel):
@@ -69,13 +76,22 @@ async def upload_document(file: UploadFile = File(...), session: AsyncSession = 
     document.versions.append(DocumentVersion(version_number=1, checksum=upload.checksum, status="uploaded"))
     session.add(document)
     await session.flush()
+    committed = False
     try:
         await _storage().save(document.id, filename, content)
         await session.commit()
+        committed = True
+        await event_publisher.publish(IngestionRequested(document.versions[0].id))
     except Exception:
-        await session.rollback()
-        _storage().delete(document.id, filename)
+        if not committed:
+            await session.rollback()
+            _storage().delete(document.id, filename)
         raise
     return DocumentSummary(id=document.id, title=document.title, original_filename=document.original_filename, mime_type=document.mime_type, size_bytes=document.size_bytes, checksum=document.checksum, status="uploaded")
+
+
+
+
+
 
 

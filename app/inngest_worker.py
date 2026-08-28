@@ -24,10 +24,11 @@ async def index_document(event: inngest.Event) -> None:
         await index_version(
             uuid.UUID(event.data["version_id"]),
             session,
-            OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size),
+            OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size, settings.openai_timeout_seconds, settings.openai_retry_attempts, settings.openai_retry_base_delay),
             OriginalStorage(settings.upload_root),
             max_attempts=settings.max_indexing_attempts,
         )
+
 
 
 

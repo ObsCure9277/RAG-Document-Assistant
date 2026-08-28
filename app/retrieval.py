@@ -6,6 +6,7 @@ from sqlalchemy import Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, DocumentChunk, DocumentVersion
+from app.reliability import Timer, log_event
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ async def retrieve(
     similarity_threshold: float = 0.0,
     document_ids: list[uuid.UUID] | None = None,
 ) -> list[Citation]:
+    timer = Timer()
     similarity = (1 - DocumentChunk.embedding.cosine_distance(query_embedding)).label("vector_score")
     vector_statement: Select[tuple[Any, ...]] = (
         select(DocumentChunk.id, Document.id, Document.original_filename, DocumentChunk.content, DocumentChunk.page_number, DocumentChunk.heading, similarity)
@@ -107,4 +109,11 @@ async def retrieve(
     text_rows = (await session.execute(text_statement)).all()
     vector_candidates = [RetrievalCandidate(row[0], row[1], row[2], row[3], row[4], row[5], float(row[6])) for row in vector_rows]
     text_candidates = [RetrievalCandidate(row[0], row[1], row[2], row[3], row[4], row[5], text_score=float(row[6])) for row in text_rows]
-    return merge_candidates(vector_candidates, text_candidates, context_limit)
+    results = merge_candidates(vector_candidates, text_candidates, context_limit)
+    log_event("retrieval_completed", query_length=len(query), vector_candidates=len(vector_candidates), text_candidates=len(text_candidates), results=len(results), duration_ms=timer.elapsed_ms)
+    return results
+
+
+
+
+

@@ -17,11 +17,13 @@ from app.embeddings import OpenAIEmbedder
 from app.chat import build_grounded_prompt, sse
 from app.chat_models import OpenAIChatModel
 from app.retrieval import retrieve, Citation
+from app.reliability import Timer, configure_logging, log_event
 from app.lifecycle import enqueue_reindex, enqueue_retry, latest_version, load_document
 from app.models import Conversation, Document, DocumentVersion, Message
 from app.settings import get_settings
 from app.storage import OriginalStorage
 
+configure_logging()
 app = FastAPI(title="Personal RAG document assistant")
 if get_settings().inngest_signing_key:
     inngest.fast_api.serve(app, inngest_client, [index_document], serve_path="/api/inngest")
@@ -241,14 +243,15 @@ async def create_message(conversation_id: uuid.UUID, request: ChatRequest, sessi
     user_message = Message(conversation_id=conversation_id, role="user", content=request.content, status="complete")
     session.add(user_message)
     await session.commit()
-    model = OpenAIChatModel(settings.openai_api_key, settings.answer_model, settings.answer_max_tokens)
+    model = OpenAIChatModel(settings.openai_api_key, settings.answer_model, settings.answer_max_tokens, settings.openai_timeout_seconds, settings.openai_retry_attempts, settings.openai_retry_base_delay)
 
     async def stream_response():
         answer = ""
         citations: list[Citation] = []
+        timer = Timer()
         try:
             query = await model.rewrite(request.content, history)
-            query_embedding = (await OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size).embed([query]))[0]
+            query_embedding = (await OpenAIEmbedder(settings.openai_api_key, settings.embedding_model, settings.embedding_batch_size, settings.openai_timeout_seconds, settings.openai_retry_attempts, settings.openai_retry_base_delay).embed([query]))[0]
             citations = await retrieve(session, query, query_embedding, vector_limit=settings.retrieval_vector_candidates, text_limit=settings.retrieval_text_candidates, context_limit=settings.retrieval_context_limit, similarity_threshold=settings.retrieval_similarity_threshold, document_ids=request.document_ids)
             yield sse("citations", [_citation_payload(citation) for citation in citations])
             prompt = build_grounded_prompt(query, history, citations)
@@ -258,12 +261,19 @@ async def create_message(conversation_id: uuid.UUID, request: ChatRequest, sessi
             assistant = Message(conversation_id=conversation_id, role="assistant", content=answer, status="complete", citations=[_citation_payload(citation) for citation in citations])
             session.add(assistant)
             await session.commit()
+            log_event("chat_completed", conversation_id=str(conversation_id), citations=len(citations), duration_ms=timer.elapsed_ms)
             yield sse("complete", {"message_id": assistant.id})
         except Exception as error:
             await session.rollback()
             session.add(Message(conversation_id=conversation_id, role="assistant", content=answer, status="incomplete", citations=[_citation_payload(citation) for citation in citations]))
             await session.commit()
+            log_event("chat_failed", conversation_id=str(conversation_id), duration_ms=timer.elapsed_ms)
             yield sse("error", {"detail": str(error), "incomplete": True})
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
+
+
+
+
+
 

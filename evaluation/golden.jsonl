@@ -1,0 +1,30 @@
+{"question":"What is the document retention policy?","expected_documents":["policy.pdf"],"expected_chunks":[]}
+{"question":"How do I request annual leave?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"What is the support escalation path?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"When is the quarterly review?","expected_documents":["calendar.txt"],"expected_chunks":[]}
+{"question":"What are the deployment steps?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"Who owns the incident process?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"What is the backup schedule?","expected_documents":["policy.pdf"],"expected_chunks":[]}
+{"question":"How are expenses approved?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"What is the password policy?","expected_documents":["policy.pdf"],"expected_chunks":[]}
+{"question":"Where are architecture decisions recorded?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"What is the onboarding checklist?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"How do I report a security issue?","expected_documents":["policy.pdf"],"expected_chunks":[]}
+{"question":"What happens during a failed deployment?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"What is the data classification scheme?","expected_documents":["policy.pdf"],"expected_chunks":[]}
+{"question":"How often are dependencies updated?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"What is the team meeting cadence?","expected_documents":["calendar.txt"],"expected_chunks":[]}
+{"question":"How do I propose a process change?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"What is the incident severity definition?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"Where is the release checklist?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"What are the working hours?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"How long are logs retained?","expected_documents":["policy.pdf"],"expected_chunks":[]}
+{"question":"What is the code review requirement?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"How are outages communicated?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"What is the next planning deadline?","expected_documents":["calendar.txt"],"expected_chunks":[]}
+{"question":"How do I rotate a credential?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"What is the remote work policy?","expected_documents":["handbook.pdf"],"expected_chunks":[]}
+{"question":"What data must not be logged?","expected_documents":["policy.pdf"],"expected_chunks":[]}
+{"question":"How do I restore a backup?","expected_documents":["runbook.md"],"expected_chunks":[]}
+{"question":"What is the holiday schedule?","expected_documents":["calendar.txt"],"expected_chunks":[]}
+{"question":"Who approves production access?","expected_documents":["policy.pdf"],"expected_chunks":[]}

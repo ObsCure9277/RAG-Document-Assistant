@@ -1,24 +1,18 @@
 from datetime import datetime, timezone
-from pathlib import Path
 import uuid
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.documents import SUPPORTED_EXTENSIONS
 from app.indexing import DocumentExtractor, Embedder, chunk_sections
-from app.models import DocumentChunk, DocumentVersion, IngestionJob
+from app.models import Document, DocumentChunk, DocumentVersion, IngestionJob
+from app.reliability import Timer, log_event
 from app.storage import OriginalStorage
 
 
-async def index_version(
-    version_id: uuid.UUID,
-    session: AsyncSession,
-    embedder: Embedder,
-    storage: OriginalStorage,
-    extractor: DocumentExtractor | None = None,
-    max_attempts: int = 3,
-) -> None:
+async def index_version(version_id: uuid.UUID, session: AsyncSession, embedder: Embedder, storage: OriginalStorage, extractor: DocumentExtractor | None = None, max_attempts: int = 3) -> None:
+    timer = Timer()
+    log_event("index_started", version_id=str(version_id))
     version = (await session.execute(select(DocumentVersion).where(DocumentVersion.id == version_id))).scalar_one()
     job = (await session.execute(select(IngestionJob).where(IngestionJob.version_id == version_id).order_by(IngestionJob.created_at.desc()))).scalars().first()
     if job is None:
@@ -29,6 +23,7 @@ async def index_version(
         job.status = "failed"
         job.error_message = "Maximum indexing attempts reached; retry requires a new job."
         await session.commit()
+        log_event("index_failed", version_id=str(version_id), duration_ms=timer.elapsed_ms, attempts=job.attempts)
         return
     job.attempts += 1
     job.status = "processing"
@@ -36,12 +31,8 @@ async def index_version(
     version.status = "processing"
     await session.flush()
     try:
-        document = await session.run_sync(lambda sync_session: sync_session.get(type(version.document), version.document_id)) if False else None
-        # The original filename is stored on the parent document; load it without relying on lazy IO.
-        from app.models import Document
         document = (await session.execute(select(Document).where(Document.id == version.document_id))).scalar_one()
-        path = storage.path_for(document.id, document.original_filename)
-        sections = (extractor or DocumentExtractor()).extract(path, document.mime_type)
+        sections = (extractor or DocumentExtractor()).extract(storage.path_for(document.id, document.original_filename), document.mime_type)
         chunks = chunk_sections(sections)
         vectors = await embedder.embed([chunk.content for chunk in chunks])
         if len(vectors) != len(chunks):
@@ -58,6 +49,7 @@ async def index_version(
         job.finished_at = datetime.now(timezone.utc)
         job.error_message = None
         await session.commit()
+        log_event("index_completed", version_id=str(version_id), chunks=len(chunks), duration_ms=timer.elapsed_ms, attempts=job.attempts)
     except Exception as error:
         await session.rollback()
         version = (await session.execute(select(DocumentVersion).where(DocumentVersion.id == version_id))).scalar_one()
@@ -70,7 +62,4 @@ async def index_version(
         job.error_message = f"Indexing failed: {error}"
         version.status = "failed" if job.attempts >= max_attempts else "uploaded"
         await session.commit()
-
-
-
-
+        log_event("index_failed", version_id=str(version_id), duration_ms=timer.elapsed_ms, attempts=job.attempts)

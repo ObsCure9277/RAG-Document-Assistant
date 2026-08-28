@@ -23,12 +23,19 @@ class Settings(BaseSettings):
     answer_model: str = "gpt-4o-mini"
     answer_max_tokens: int = Field(default=800, ge=1)
     conversation_history_limit: int = Field(default=10, ge=1)
+    openai_timeout_seconds: float = Field(default=60.0, gt=0)
+    openai_retry_attempts: int = Field(default=3, ge=1)
+    openai_retry_base_delay: float = Field(default=0.5, ge=0)
+    max_concurrent_jobs: int = Field(default=2, ge=1)
+    max_document_pages: int = Field(default=500, ge=1)
+    max_document_tokens: int = Field(default=200000, ge=1)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
 
 
 

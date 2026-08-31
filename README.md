@@ -155,39 +155,47 @@ npm run dev
 
 Open the workspace at http://127.0.0.1:5173.
 
-The Vite development server proxies `/api` requests to FastAPI on port 8001.
+The Vite development server proxies `/api` and `/health` requests to FastAPI on port 8001. For phone or tablet previews on the same LAN, run `npm run dev -- --host 0.0.0.0` and open the host machine address on port 5173.
 
 ## API examples
+
+Set the API token in your PowerShell session before calling protected endpoints:
+
+```powershell
+$env:API_AUTH_TOKEN = "<value configured in .env>"
+```
 
 Upload a document:
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:8001/api/documents `
+  -H "Authorization: Bearer $env:API_AUTH_TOKEN" `
   -F "file=@.scratch\rag-document-assistant\issues\01-dockerized-persistence-foundation.md"
 ```
 
 List documents:
 
 ```powershell
-curl.exe http://127.0.0.1:8001/api/documents
+curl.exe http://127.0.0.1:8001/api/documents -H "Authorization: Bearer $env:API_AUTH_TOKEN"
 ```
 
 Search indexed documents:
 
 ```powershell
-curl.exe "http://127.0.0.1:8001/api/search?query=database%20persistence"
+curl.exe "http://127.0.0.1:8001/api/search?query=database%20persistence" -H "Authorization: Bearer $env:API_AUTH_TOKEN"
 ```
 
 Create a conversation:
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:8001/api/conversations
+curl.exe -X POST http://127.0.0.1:8001/api/conversations -H "Authorization: Bearer $env:API_AUTH_TOKEN"
 ```
 
 Send a streaming chat message:
 
 ```powershell
 curl.exe -N -X POST http://127.0.0.1:8001/api/conversations/{conversation_id}/messages `
+  -H "Authorization: Bearer $env:API_AUTH_TOKEN" `
   -H "Content-Type: application/json" `
   -d '{"content":"What does the document say about persistence?"}'
 ```
@@ -270,11 +278,12 @@ app/
   chat.py             Grounded prompt and SSE helpers
   lifecycle.py        Document version lifecycle
   evaluation.py       Retrieval evaluation metrics
-  storage.py           Original file storage
+  storage.py          Original file storage
 
 frontend/
   src/App.tsx         Document library and upload workspace
-  src/Chat.tsx        Streaming chat interface
+  src/api.ts          Authenticated API client
+  src/components.tsx  Typed document and chat UI components
   src/index.css       Responsive dark theme
 ```
 

@@ -2,9 +2,9 @@ import uuid
 from pathlib import Path
 
 import inngest.fast_api
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -22,9 +22,20 @@ from app.lifecycle import enqueue_reindex, enqueue_retry, latest_version, load_d
 from app.models import Conversation, Document, DocumentVersion, Message
 from app.settings import get_settings
 from app.storage import OriginalStorage
+from app.security import require_api_token
 
 configure_logging()
 app = FastAPI(title="Personal RAG document assistant")
+
+
+@app.middleware("http")
+async def authenticate_api(request: Request, call_next):
+    if request.url.path != "/health" and not request.url.path.startswith("/api/inngest"):
+        try:
+            await require_api_token(request)
+        except HTTPException as error:
+            return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+    return await call_next(request)
 if get_settings().inngest_signing_key:
     inngest.fast_api.serve(app, inngest_client, [index_document], serve_path="/api/inngest")
 if get_settings().inngest_event_key:
@@ -76,7 +87,7 @@ def _summary(document: Document) -> DocumentSummary:
         status=version.status if version else "uploaded",
         version=version.version_number if version else 0,
         active_version_id=document.active_version_id,
-        error_message=job.error_message if job and version and version.status == "failed" else None,
+        error_message="Indexing failed. Please retry the document." if job and version and version.status == "failed" else None,
     )
 
 
@@ -151,34 +162,40 @@ async def load_document_by_checksum(session: AsyncSession, checksum: str) -> Doc
 
 @app.post("/api/documents/{document_id}/reindex", response_model=DocumentSummary)
 async def reindex_document(document_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> DocumentSummary:
-    document = await load_document(session, document_id)
+    document = await load_document(session, document_id, lock=True)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    version = enqueue_reindex(document)
+    try:
+        version = enqueue_reindex(document, get_settings().max_document_versions)
+    except ValueError as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
     await session.commit()
     await _publish(version.id)
-    document = await load_document(session, document_id)
+    document = await load_document(session, document_id, lock=True)
     return _summary(document)
 
 
 @app.post("/api/documents/{document_id}/retry", response_model=DocumentSummary)
 async def retry_document(document_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> DocumentSummary:
-    document = await load_document(session, document_id)
+    document = await load_document(session, document_id, lock=True)
     version = latest_version(document) if document else None
     if not document or not version:
         raise HTTPException(status_code=404, detail="Document not found")
     if version.status != "failed":
         raise HTTPException(status_code=409, detail="Only failed document versions can be retried")
-    job = enqueue_retry(version)
+    try:
+        job = enqueue_retry(version, get_settings().max_jobs_per_version)
+    except ValueError as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
     await session.commit()
     await _publish(version.id)
-    document = await load_document(session, document_id)
+    document = await load_document(session, document_id, lock=True)
     return _summary(document)
 
 
 @app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(document_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> None:
-    document = await load_document(session, document_id)
+    document = await load_document(session, document_id, lock=True)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     filename = document.original_filename
@@ -204,7 +221,7 @@ class MessageResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    content: str
+    content: str = Field(min_length=1, max_length=12000)
     document_ids: list[uuid.UUID] | None = None
 
 
@@ -232,6 +249,8 @@ async def list_messages(conversation_id: uuid.UUID, session: AsyncSession = Depe
 async def create_message(conversation_id: uuid.UUID, request: ChatRequest, session: AsyncSession = Depends(get_session)) -> StreamingResponse:
     from fastapi.responses import StreamingResponse
     settings = get_settings()
+    if len(request.content) > settings.max_message_chars:
+        raise HTTPException(status_code=413, detail="Message content is too large")
     if not request.content.strip():
         raise HTTPException(status_code=400, detail="Message content must not be empty")
     conversation = await session.get(Conversation, conversation_id)
@@ -270,7 +289,7 @@ async def create_message(conversation_id: uuid.UUID, request: ChatRequest, sessi
             session.add(Message(conversation_id=conversation_id, role="assistant", content=answer, status="incomplete", citations=[_citation_payload(citation) for citation in citations]))
             await session.commit()
             log_event("chat_failed", conversation_id=str(conversation_id), duration_ms=timer.elapsed_ms)
-            yield sse("error", {"detail": str(error), "incomplete": True})
+            yield sse("error", {"detail": "The response could not be completed.", "incomplete": True})
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
 

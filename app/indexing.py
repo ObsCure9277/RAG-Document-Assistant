@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Protocol
+import zipfile
 
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import TextNode
@@ -29,12 +30,45 @@ class Embedder(Protocol):
 
 
 class DocumentExtractor:
+    def __init__(self, max_pages: int = 500, max_tokens: int = 200000, max_archive_bytes: int = 50 * 1024 * 1024):
+        self.max_pages = max_pages
+        self.max_chars = max_tokens * 4
+        self.max_archive_bytes = max_archive_bytes
+
+    def _check_budget(self, total_chars: int) -> None:
+        if total_chars > self.max_chars:
+            raise ValueError("Document exceeds the configured extracted-content limit")
+
+    def _validate_docx_archive(self, path: Path, max_members: int = 10000) -> None:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            if len(members) > max_members:
+                raise ValueError("Document exceeds the configured archive member limit")
+            total_size = 0
+            for member in members:
+                if member.file_size < 0:
+                    raise ValueError("Document contains an invalid archive member")
+                total_size += member.file_size
+                if total_size > self.max_archive_bytes:
+                    raise ValueError("Document exceeds the configured extracted-content limit")
+
     def extract(self, path: Path, mime_type: str) -> list[ExtractedSection]:
         if path.suffix.lower() == ".pdf" or mime_type == "application/pdf":
             import fitz
             with fitz.open(path) as document:
-                return [ExtractedSection(page.get_text().strip(), path.name, page.number + 1) for page in document if page.get_text().strip()]
+                if len(document) > self.max_pages:
+                    raise ValueError("Document exceeds the configured page limit")
+                sections: list[ExtractedSection] = []
+                total_chars = 0
+                for page in document:
+                    text = page.get_text().strip()
+                    if text:
+                        total_chars += len(text)
+                        self._check_budget(total_chars)
+                        sections.append(ExtractedSection(text, path.name, page.number + 1))
+                return sections
         if path.suffix.lower() == ".docx":
+            self._validate_docx_archive(path)
             from docx import Document
             document = Document(path)
             sections: list[ExtractedSection] = []
@@ -46,9 +80,13 @@ class DocumentExtractor:
                 if paragraph.style.name.lower().startswith("heading"):
                     heading = text
                 else:
+                    self._check_budget(sum(len(section.text) for section in sections) + len(text))
                     sections.append(ExtractedSection(text, path.name, heading=heading))
             return sections
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        if len(raw) > self.max_chars:
+            raise ValueError("Document exceeds the configured extracted-content limit")
+        text = raw.decode("utf-8")
         sections = []
         heading: str | None = None
         for line in text.splitlines():

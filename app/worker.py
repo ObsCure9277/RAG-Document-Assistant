@@ -8,6 +8,7 @@ from app.indexing import DocumentExtractor, Embedder, chunk_sections
 from app.models import Document, DocumentChunk, DocumentVersion, IngestionJob
 from app.reliability import Timer, log_event
 from app.storage import OriginalStorage
+from app.settings import get_settings
 
 
 async def index_version(version_id: uuid.UUID, session: AsyncSession, embedder: Embedder, storage: OriginalStorage, extractor: DocumentExtractor | None = None, max_attempts: int = 3) -> None:
@@ -34,7 +35,13 @@ async def index_version(version_id: uuid.UUID, session: AsyncSession, embedder: 
         document = (await session.execute(select(Document).where(Document.id == version.document_id))).scalar_one()
         load_timer = Timer()
         log_event("load_and_chunk_started", version_id=str(version_id))
-        sections = (extractor or DocumentExtractor()).extract(storage.path_for(document.id, document.original_filename), document.mime_type)
+        settings = get_settings() if extractor is None else None
+        default_extractor = DocumentExtractor(settings.max_document_pages, settings.max_document_tokens, settings.max_document_archive_bytes) if settings else DocumentExtractor()
+        sections = (extractor or default_extractor).extract(storage.path_for(document.id, document.original_filename), document.mime_type)
+        max_pages = settings.max_document_pages if settings else 500
+        max_chars = (settings.max_document_tokens if settings else 200000) * 4
+        if len({section.page_number for section in sections if section.page_number is not None}) > max_pages or sum(len(section.text) for section in sections) > max_chars:
+            raise ValueError("Document exceeds the configured extraction limits")
         chunks = chunk_sections(sections)
         log_event("load_and_chunk_completed", version_id=str(version_id), sections=len(sections), chunks=len(chunks), duration_ms=load_timer.elapsed_ms, chunks_per_second=round(len(chunks) / max(load_timer.elapsed_ms / 1000, 0.001), 2))
         embed_timer = Timer()
@@ -66,7 +73,7 @@ async def index_version(version_id: uuid.UUID, session: AsyncSession, embedder: 
             session.add(job)
         job.attempts = (job.attempts or 0) + 1
         job.status = "failed" if job.attempts >= max_attempts else "queued"
-        job.error_message = f"Indexing failed: {error}"
+        job.error_message = "Indexing failed. Please retry the document."
         version.status = "failed" if job.attempts >= max_attempts else "uploaded"
         await session.commit()
-        log_event("index_failed", version_id=str(version_id), duration_ms=timer.elapsed_ms, attempts=job.attempts)
+        log_event("index_failed", version_id=str(version_id), duration_ms=timer.elapsed_ms, attempts=job.attempts, error_type=type(error).__name__)

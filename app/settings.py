@@ -5,7 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql+asyncpg://rag_assistant:change-me@localhost:5432/rag_assistant"
+    database_url: str
+    api_auth_token: str = ""
     embedding_dimension: int = Field(default=1536, ge=1)
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
     upload_root: str = "/data/uploads"
@@ -30,6 +31,10 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = Field(default=2, ge=1)
     max_document_pages: int = Field(default=500, ge=1)
     max_document_tokens: int = Field(default=200000, ge=1)
+    max_document_archive_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
+    max_message_chars: int = Field(default=12000, ge=1)
+    max_document_versions: int = Field(default=20, ge=1)
+    max_jobs_per_version: int = Field(default=3, ge=1)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

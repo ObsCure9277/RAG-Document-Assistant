@@ -96,6 +96,8 @@ EMBEDDING_MODEL=openai/text-embedding-3-small
 
 Never commit `.env` or expose the API key in logs, screenshots, or issue reports.
 
+Set `API_AUTH_TOKEN` to a long random secret. The frontend uses the same value through `VITE_API_TOKEN` and sends it as `Authorization: Bearer <token>`. All application API routes require this token; only `/health` and the signed Inngest handler are unauthenticated at the application middleware.
+
 ## Run locally
 
 ### 1. Install backend dependencies
